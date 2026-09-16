@@ -3,6 +3,7 @@ pub mod api_actions;
 pub mod cache;
 pub mod firebase;
 pub mod model;
+pub mod notifications;
 pub mod push;
 pub mod realtime;
 

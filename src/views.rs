@@ -312,7 +312,7 @@ fn connection(app: &mut App, ctx: &egui::Context) {
                         ui.add_space(18.0);
                         ui.hyperlink_to(
                             "Need help setting up your server?",
-                            "https://docs.bluebubbles.app/server/installation",
+                            "https://bluebubbles.app/install/",
                         );
                     });
                 });

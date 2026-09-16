@@ -404,15 +404,27 @@ async fn receive(path: &Path, state: &mut SavedRegistration) -> ApiResult<()> {
             }
             Message::Other(4 | 10, _) => return Err("FCM closed the session; reconnecting…".into()),
             Message::Data(data) => {
-                process_data(path, state, data, |body| async move {
+                let scope = format!("firebase:{}", state.project);
+                process_data(path, state, data, |body, id| async move {
                     tokio::task::spawn_blocking(move || {
-                        notify_rust::Notification::new()
-                            .appname("BlueBubbles")
-                            .summary("BlueBubbles")
-                            .body(&body)
-                            .icon("app.bluebubbles.RustLinux")
-                            .show()
-                            .map(|_| ())
+                        let deliver = || {
+                            notify_rust::Notification::new()
+                                .appname("BlueBubbles")
+                                .summary("BlueBubbles")
+                                .body(&body)
+                                .icon("app.bluebubbles.RustLinux")
+                                .show()
+                                .map(|_| ())
+                                .map_err(|_| "Desktop notifications unavailable; retrying…".into())
+                        };
+                        if let Some(id) = id {
+                            crate::notifications::deliver_once(&scope, &id, deliver)
+                        } else if body == "New message" && crate::notifications::gui_active(&scope)
+                        {
+                            Ok(())
+                        } else {
+                            deliver()
+                        }
                     })
                     .await
                     .map_err(|_| "Desktop notification worker failed.")?
@@ -433,7 +445,7 @@ async fn process_data<F, Fut>(
     deliver: F,
 ) -> ApiResult<()>
 where
-    F: FnOnce(String) -> Fut,
+    F: FnOnce(String, Option<String>) -> Fut,
     Fut: std::future::Future<Output = ApiResult<()>>,
 {
     if data
@@ -449,7 +461,7 @@ where
         .unwrap_or_default();
     if let Some((id, body)) = notification(&data.body, preferences.previews) {
         if id.as_ref().is_none_or(|id| !state.message_ids.contains(id)) {
-            deliver(body).await?;
+            deliver(body, id.clone()).await?;
             if let Some(id) = id {
                 state.message_ids.push(id);
             }
@@ -530,13 +542,13 @@ mod tests {
         };
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {
-            assert!(process_data(&path, &mut state, data("one"), |_| async {
+            assert!(process_data(&path, &mut state, data("one"), |_, _| async {
                 Err("No desktop bus".into())
             })
             .await
             .is_err());
             assert!(state.persistent_ids.is_empty());
-            process_data(&path, &mut state, data("one"), |body| async move {
+            process_data(&path, &mut state, data("one"), |body, _| async move {
                 assert_eq!(body, "New message");
                 Ok(())
             })
@@ -545,7 +557,7 @@ mod tests {
             let mut restored: SavedRegistration =
                 serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
             for id in ["one", "two"] {
-                process_data(&path, &mut restored, data(id), |_| async {
+                process_data(&path, &mut restored, data(id), |_, _| async {
                     panic!("Duplicate notification")
                 })
                 .await

@@ -23,6 +23,7 @@ fcm-http = { package = "reqwest", version = "0.13", default-features = false, fe
 tokio = { version = "1", features = ["rt-multi-thread", "time", "macros", "io-util"] }
 tokio-stream = "0.1"
 notify-rust = "4"
+ksni = { version = "=0.3.6", features = ["blocking"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 prost = "0.14"
 

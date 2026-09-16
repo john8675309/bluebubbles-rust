@@ -105,6 +105,12 @@ pub struct App {
     generation: u64,
     next_refresh: Instant,
     display: crate::display::DisplayScaling,
+    tray: Option<crate::tray::Tray>,
+    hidden: bool,
+    quit_requested: bool,
+    alerts: bluebubbles_linux::notifications::Tracker,
+    desktop: Option<bluebubbles_linux::notifications::Desktop>,
+    next_notification_lease: Instant,
 }
 
 impl App {
@@ -133,6 +139,8 @@ impl App {
             .and_then(|s| s.get_string("firebase_auto"))
             .as_deref()
             != Some("false");
+        app.tray = Some(crate::tray::Tray::start(&cc.egui_ctx));
+        app.desktop = Some(bluebubbles_linux::notifications::Desktop::default());
         app
     }
 
@@ -185,6 +193,12 @@ impl App {
             generation: 0,
             next_refresh: Instant::now(),
             display: crate::display::DisplayScaling::default(),
+            tray: None,
+            hidden: false,
+            quit_requested: false,
+            alerts: Default::default(),
+            desktop: None,
+            next_notification_lease: Instant::now(),
         }
     }
 
@@ -375,6 +389,10 @@ impl App {
     }
 
     pub fn disconnect(&mut self) {
+        if let Some(desktop) = &self.desktop {
+            desktop.lease(None);
+        }
+        self.alerts = Default::default();
         self.generation += 1;
         self.firebase_busy = false;
         self.api = None;
@@ -538,6 +556,72 @@ impl App {
         }
     }
 
+    fn alert_message(&mut self, chat: &str, message: &Message) {
+        if !self.alerts.incoming(chat, message) {
+            return;
+        }
+        let Some(desktop) = &self.desktop else {
+            return;
+        };
+        let key = self.firebase_key();
+        let scope = self
+            .firebase_configs
+            .get(&key)
+            .map(|config| format!("firebase:{}", config.project_id))
+            .unwrap_or_else(|| format!("server:{key}"));
+        let previews = self.push_previews;
+        desktop.send(bluebubbles_linux::notifications::Alert {
+            scope,
+            guid: message.guid.clone(),
+            title: "BlueBubbles".into(),
+            body: if previews {
+                bluebubbles_linux::notifications::body(&message.preview())
+            } else {
+                "New message".into()
+            },
+        });
+    }
+
+    fn desktop_update(&mut self, ctx: &egui::Context) {
+        if let Some(tray) = &self.tray {
+            self.quit_requested |= tray.quitting();
+            for action in tray.actions() {
+                match action {
+                    crate::tray::Action::Show => self.hidden = false,
+                    crate::tray::Action::Quit => self.quit_requested = true,
+                }
+            }
+            if self.quit_requested {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else if ctx.input(|input| input.viewport().close_requested()) && tray.online() {
+                self.hidden = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            }
+        }
+        if let Some(desktop) = &self.desktop {
+            for error in desktop.errors() {
+                self.error = Some(error);
+            }
+            if Instant::now() >= self.next_notification_lease {
+                let healthy = self.connected
+                    && (self.socket_online
+                        || self
+                            .last_sync
+                            .is_some_and(|sync| sync.elapsed() < Duration::from_secs(10)));
+                let project = if healthy {
+                    self.firebase_configs
+                        .get(&self.firebase_key())
+                        .map(|config| format!("firebase:{}", config.project_id))
+                } else {
+                    None
+                };
+                desktop.lease(project);
+                self.next_notification_lease = Instant::now() + Duration::from_secs(5);
+            }
+        }
+    }
+
     fn receive_live(&mut self, event: LiveEvent) {
         match event {
             LiveEvent::Connected => {
@@ -565,6 +649,9 @@ impl App {
                         for value in chats {
                             if let Ok(mut chat) = serde_json::from_value::<Chat>(value.clone()) {
                                 let guid = chat.guid.clone();
+                                if name == "new-message" {
+                                    self.alert_message(&guid, &message);
+                                }
                                 self.typing.remove(&guid);
                                 let messages = self.messages.entry(guid.clone()).or_default();
                                 merge_messages(messages, vec![message.clone()]);
@@ -903,6 +990,7 @@ impl App {
                     self.cache_errors = Some(errors);
                 }
                 Event::Connected(chats) => {
+                    self.alerts.reset(&chats);
                     self.connected = true;
                     self.error = None;
                     self.password.clear();
@@ -938,6 +1026,19 @@ impl App {
                     self.last_sync = Some(Instant::now());
                 }
                 Event::Refreshed { chats, messages } => {
+                    // Catch up all returned messages before previews advance the watermark.
+                    if let Some((chat, history)) = &messages {
+                        let mut sorted = history.iter().collect::<Vec<_>>();
+                        sorted.sort_by_key(|message| message.activity_timestamp());
+                        for message in sorted {
+                            self.alert_message(chat, message);
+                        }
+                    }
+                    for chat in &chats {
+                        if let Some(message) = &chat.last_message {
+                            self.alert_message(&chat.guid, message);
+                        }
+                    }
                     self.merge_chats(chats);
                     if let Some((chat, messages)) = messages {
                         self.more_messages
@@ -982,6 +1083,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.desktop_update(ctx);
         self.display.update(ctx);
         self.receive(ctx);
         if let Some(errors) = &self.cache_errors {

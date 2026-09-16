@@ -27,7 +27,7 @@ Baseline reviewed: upstream client `e2eaced6e`, especially
 | Group details | Pending | Rename, participants, leave/delete, group icons, media/links, local preferences |
 | Scheduling | Pending | Create/edit/delete schedules; scheduled messages list; reminders |
 | Search | Loaded-content search implemented | Database/server search, filters, jump to message, media/contact search |
-| Desktop integration | Launcher/packages implemented | Notification actions/sound, tray, main-app startup, window behavior, protocol links, shortcuts |
+| Desktop integration | Launcher/packages, close-to-tray, icon restore, explicit quit, connected-session desktop alerts | Notification actions/sound, main-app startup, protocol links, shortcuts; physical desktop/Wayland checks |
 | Appearance | Light/dark implemented | Font/scale controls, themes/skins, accent/bubble/avatar/background customization, import/export |
 | Server management | Pending | Status/capabilities, logs/stats, restart/update controls, troubleshooting |
 | Backup/storage | Pending | Export/import, local/server backups, storage analysis/cleanup |

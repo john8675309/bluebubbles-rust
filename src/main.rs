@@ -2,6 +2,7 @@ mod app;
 mod composer;
 mod display;
 mod theme;
+mod tray;
 mod views;
 mod widgets;
 

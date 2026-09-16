@@ -15,6 +15,15 @@ shortcuts, and Unicode emoji insertion at the selection.
 mark, and date separators. Keep chat row IDs stable and preserve keyboard focus. `src/display.rs` adapts
 scaling to the current monitor, with a 2x fallback for unscaled 4K displays.
 
+`src/tray.rs` owns the StatusNotifierItem service on a background thread. Cancel
+window close only with a registered tray host; explicit Quit must bypass that guard.
+Serve the embedded icon as a cached PNG via IconName as well as ARGB pixmaps;
+portable builds must not depend on an installed icon theme.
+Restore the window when the host disappears. `src/notifications.rs` filters new
+messages and serializes GUI/FCM notification delivery using a private ID-only ledger.
+Never notify on initial history, old pages, receipts, or outgoing messages. Keep
+notification D-Bus and storage operations off the UI thread.
+
 All network and attachment work runs off the UI thread.
 Load all conversation pages before sorting globally by latest message activity;
 the server sorts only within each page. Keep read receipts from promoting chats,

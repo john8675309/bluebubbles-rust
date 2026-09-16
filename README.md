@@ -9,6 +9,11 @@ server. Full feature parity is still in progress; see [PARITY.md](PARITY.md).
 Based on the [BlueBubbles project](https://github.com/BlueBubblesApp/bluebubbles-app).
 This is not an official BlueBubbles release.
 
+## Downloads
+
+Get the Debian package or portable Linux archive from [GitHub Releases](https://github.com/john8675309/bluebubbles-rust/releases).
+The first release provides x86_64/amd64 builds. Checksums are included as `SHA256SUMS`.
+
 ## Run
 
 Launch `bluebubbles-linux` from the extracted release archive, or from this checkout:
@@ -18,7 +23,7 @@ Launch `bluebubbles-linux` from the extracted release archive, or from this chec
 ```
 
 Enter your BlueBubbles server URL and its password. You need a configured
-[BlueBubbles server on a Mac](https://docs.bluebubbles.app/server/installation)
+[BlueBubbles server on a Mac](https://bluebubbles.app/install/)
 signed in to Messages. This client does not replace the Mac server.
 Direct HTTP(S) URLs, reverse-proxy path prefixes, and URLs ending in `/api/v1` are
 accepted. HTTPS certificates are verified. Redirects are rejected; enter the final
@@ -57,6 +62,32 @@ with private file permissions. Disabling history stops future reads/writes; it
 does not erase previously saved history. Cached content is restored after login. A timed-out send may
 still have reached the server: check the conversation before retrying.
 Downloads require a new filename and never overwrite existing files.
+
+## System tray and new-message alerts
+
+Click the window's **X** to hide BlueBubbles in the system tray. The connection,
+message sync, and unsent drafts stay active. Click the tray icon to reopen the
+window, or use **Open BlueBubbles** in its menu. **Quit BlueBubbles** exits the GUI;
+an explicitly enabled Firebase receiver can still deliver background notifications.
+
+New incoming messages show a desktop notification, including while the window is
+hidden. Initial history, outgoing messages, reactions, read receipts, and repeated
+polls do not generate alerts. Previews are off by default; the Firebase panel's
+preview option also controls connected-session alerts. The app does not steal
+focus when a message arrives. Your desktop's Do Not Disturb settings still apply.
+
+The tray uses [StatusNotifierItem through ksni](https://github.com/iovxw/ksni).
+The embedded BlueBubbles icon is cached as a PNG for panel compatibility,
+including portable builds. XFCE needs its Status Notifier/AppIndicator panel plugin; GNOME needs an
+AppIndicator extension. If no tray host is available, X exits normally instead
+of leaving an inaccessible hidden window. If the tray disappears while hidden,
+the window is restored. Wayland compositor focus policies can limit activation.
+
+GUI and Firebase alerts share a private, seven-day message-ID ledger under
+`~/.local/share/rust-linux/notifications/`. It stores no message bodies or passwords.
+Encrypted Firebase alerts have no message ID; a short-lived healthy-session marker
+lets the GUI handle those alerts while connected, with Firebase taking over when
+the marker expires. The notification service must be running in your desktop session.
 
 ## Firebase and background notifications
 
@@ -114,9 +145,9 @@ displaying raw error pages or credentials.
 
 ### Feature coverage
 
-Full parity is the target; see [PARITY.md](PARITY.md) for remaining work. The messaging window must remain open for chat synchronization. The optional
+Full parity is the target; see [PARITY.md](PARITY.md) for remaining work. The app must remain running (visible or in the tray) for chat synchronization. The optional
 FCM receiver runs independently for notifications when the window is closed. Offline login/search, cache management,
-keyring login, system tray, inline media playback,
+keyring login, inline media playback,
 tapback/thread presentation, private-API editing/unsending,
 scheduled sending, and theme/skin parity with Flutter remain unfinished. Attachments can be saved
 and opened in another application. Participant addresses use server contact names where available. The latest message page is refreshed for receipts;
@@ -180,6 +211,9 @@ The 4K-history variant checks scaling and opt-in SQLite persistence without stor
 the password.
 `dbus-run-session -- python3 tests/notification_smoke.py` verifies delivery to an
 isolated desktop notification service (requires Python dbus and GLib bindings).
+`dbus-run-session -- xvfb-run -a -s '-screen 0 1100x760x24' python3 tests/tray_smoke.py`
+checks close-to-tray, icon activation, hidden polling, notification deduplication,
+draft preservation, and explicit Quit with isolated mock desktop services.
 Screenshots are written to `dist/screenshots/`. A real Mac server and Wayland desktop still
 need end-to-end validation.
 
@@ -195,6 +229,8 @@ need end-to-end validation.
 - `src/app.rs`: session state, background work, polling, and drafts.
 - `src/views.rs`, `src/theme.rs`, `src/widgets.rs`: desktop interface and shared visuals.
 - `src/composer.rs`: keyboard sending, multiline editing, and emoji picker.
+- `src/tray.rs`: system tray, window restoration, and explicit quit.
+- `src/notifications.rs`: incoming-message alerts and shared Firebase deduplication.
 - `src/display.rs`: automatic monitor scaling and window sizing.
 - `packaging/`: launcher and local distribution script.
 

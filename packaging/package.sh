@@ -46,8 +46,8 @@ Description: Native Rust Linux client for BlueBubbles
 EOF
     dpkg-deb --root-owner-group --build "$package" "dist/bluebubbles-linux_${version}_${debarch}.deb"
 fi
-sha256sum dist/"$name.tar.gz" > dist/SHA256SUMS
+(cd dist && sha256sum "$name.tar.gz") > dist/SHA256SUMS
 if test -n "${debarch:-}"; then
-    sha256sum "dist/bluebubbles-linux_${version}_${debarch}.deb" >> dist/SHA256SUMS
+    (cd dist && sha256sum "bluebubbles-linux_${version}_${debarch}.deb") >> dist/SHA256SUMS
 fi
 echo "Packages written to $(pwd)/dist"
