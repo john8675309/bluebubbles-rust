@@ -1,0 +1,13 @@
+/target/
+/dist/
+__pycache__/
+
+# Local credentials and app data
+.env
+.env.*
+!.env.example
+google-services.json
+*service-account*.json
+*.pem
+*.key
+*.sqlite3*

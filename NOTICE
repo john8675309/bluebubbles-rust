@@ -1,0 +1,15 @@
+BlueBubbles Rust
+A lightweight Rust client for BlueBubbles.
+
+This independent community client interoperates with the BlueBubbles server.
+The bundled BlueBubbles icon is from the BlueBubbles project:
+https://github.com/BlueBubblesApp/bluebubbles-app
+Copyright the BlueBubbles contributors. Licensed under Apache License 2.0.
+
+The Rust client was developed with reference to the upstream BlueBubbles client
+and server API implementations. Changes include a native Rust/egui Linux
+interface, standalone packaging, and Rust implementations of the API client,
+local cache, Firebase URL recovery, and background notifications.
+
+BlueBubbles names and branding belong to their respective owners. This repository
+is not an official BlueBubbles release or an assertion of upstream endorsement.

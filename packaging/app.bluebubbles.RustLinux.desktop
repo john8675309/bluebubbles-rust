@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=BlueBubbles Rust
+Comment=Message through your BlueBubbles server
+Exec=bluebubbles-linux
+Icon=app.bluebubbles.RustLinux
+Terminal=false
+Categories=Network;InstantMessaging;
+StartupWMClass=app.bluebubbles.RustLinux
