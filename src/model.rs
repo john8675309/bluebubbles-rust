@@ -57,6 +57,13 @@ where
 }
 
 impl Message {
+    pub fn is_unsent(&self) -> bool {
+        self.extra
+            .get("dateRetracted")
+            .and_then(|value| value.as_i64())
+            .is_some_and(|time| time > 0)
+    }
+
     /// Match the server's activity ordering when creation time is unavailable.
     /// Read receipts must never promote an old conversation.
     pub fn activity_timestamp(&self) -> Option<i64> {
@@ -65,6 +72,9 @@ impl Message {
             .or_else(|| self.date_delivered.filter(|time| *time > 0))
     }
     pub fn preview(&self) -> String {
+        if self.is_unsent() {
+            return "Message unsent".into();
+        }
         self.text
             .as_ref()
             .filter(|s| !s.trim().is_empty())
@@ -133,6 +143,12 @@ pub fn merge_messages(current: &mut Vec<Message>, incoming: Vec<Message>) {
             if old.date_edited > incoming.date_edited {
                 incoming.text = old.text.clone();
                 incoming.date_edited = old.date_edited;
+                if old.is_unsent() {
+                    incoming
+                        .extra
+                        .insert("dateRetracted".into(), old.extra["dateRetracted"].clone());
+                    incoming.attachments.clear();
+                }
             }
             *old = incoming;
         } else {

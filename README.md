@@ -147,18 +147,59 @@ displaying raw error pages or credentials.
 
 Full parity is the target; see [PARITY.md](PARITY.md) for remaining work. The app must remain running (visible or in the tray) for chat synchronization. The optional
 FCM receiver runs independently for notifications when the window is closed. Offline login/search, cache management,
-keyring login, inline media playback,
-tapback/thread presentation, private-API editing/unsending,
-scheduled sending, and theme/skin parity with Flutter remain unfinished. Attachments can be saved
+keyring login, complete multipart thread/tapback presentation, scheduled sending,
+and theme/skin parity with Flutter remain unfinished. Attachments can also be saved
 and opened in another application. Participant addresses use server contact names where available. The latest message page is refreshed for receipts;
 older cached messages are not continuously re-fetched for edits/deletions.
+
+## Server contact names
+
+Click a one-to-one conversation title, a participant number/email in the header,
+or a group-message sender name to open **Edit server contact**. Changes save to
+BlueBubbles Server's contact database; there is no app-local name override.
+An unknown address can be added as a new server contact. Existing recipient
+addresses, first/last names, and avatars are preserved when changing a display name.
+
+**Requires the companion server patch:** stock BlueBubbles Server exposes contact
+listing/creation but not an ID-based update endpoint. See
+[server patch instructions](server-patches/README.md). Without the patch, the
+editor explains the requirement and disables saving. macOS Contacts entries are
+read-only through this API and must be edited in Contacts on the Mac. Full remote
+address-book editing and phone/email changes remain unsupported.
+
+## Private API and inline media
+
+The toolbar shows the connected server's Private API capabilities. When its helper
+is connected, supported iMessage conversations can use replies, tapbacks, subjects,
+effects, read/unread actions, and group rename/participant/leave actions. Outgoing
+text can be edited within 15 minutes or unsent within 2 minutes on supported
+macOS/server versions. Typing indicators are opt-in. Actions are capability-gated;
+failed private sends retain the draft and never automatically retry or fall back.
+These paths are mock tested; live Mac verification remains necessary. Multipart
+message actions and rich threaded views remain incomplete.
+
+Images load automatically inside visible messages; click an image to enlarge it.
+PNG, JPEG, WebP, and animated GIFs are supported. GIFs autoplay and loop in the
+conversation and enlarged view while visible. Decoding runs in the background;
+GIF frames decode on demand with one frame prefetched; long animations no longer
+need every frame in memory. The cache targets 96 MiB, accounting for decoder
+buffers; currently visible images may exceed that target. Individual GIF canvas
+buffers remain limited to 128 MiB. HEIC previews depend on the
+server's image conversion. Preview downloads are limited to 24 MiB and cached in
+memory. Videos play inside the conversation with audio, pause, seek, mute, and stop
+controls. Phone-video rotation metadata (90°, 180°, and 270°) is applied before
+display, with portrait aspect ratios preserved. Click **Play video** to download into anonymous temporary storage (up to
+512 MiB); playback starts after download. Switching chats, hiding the app, or
+disconnecting stops playback. Video support uses the codecs in your installed
+libmpv. Unsupported media still offers **Save**. Audio-only attachments, video thumbnails, and galleries remain unfinished.
 
 ## Build
 
 Use Rust **1.89 or newer** and a Linux C toolchain (`build-essential` and
 `pkg-config`, `cmake`, `protobuf-compiler` (protoc), and `libssl-dev` on Debian/Ubuntu). Runtime support requires Mesa/OpenGL, X11 or
 Wayland, OpenSSL 3, libxkbcommon, and a desktop portal backend for file dialogs. GTK
-development headers are not required.
+development headers are not required. Inline video requires `libmpv2` (installed
+as a dependency by the Debian package).
 
 ```sh
 git clone https://github.com/john8675309/bluebubbles-rust.git
@@ -217,6 +258,16 @@ draft preservation, and explicit Quit with isolated mock desktop services.
 Screenshots are written to `dist/screenshots/`. A real Mac server and Wayland desktop still
 need end-to-end validation.
 
+The Private API edit/reply GUI check is `tests/private_api_smoke.py`.
+The inline media check is `tests/media_smoke.py` (also requires FFmpeg, Pillow,
+and libmpv2); it generates a local test clip and checks images, playback, pause,
+seek, stop, and messaging. Run either under the same isolated Xvfb/D-Bus setup.
+`tests/gif_smoke.py` checks GIF autoplay/looping and sending against a mock server
+under Xvfb (requires Pillow).
+`tests/video_orientation_smoke.py` generates clips at all four right-angle
+orientations and verifies decoded pixel placement and portrait/landscape sizes
+(requires FFmpeg 7+ and libmpv2; set `CARGO_BIN` if Cargo is not on PATH).
+
 ## Source layout
 
 - `src/api.rs`: HTTP transport and server API operations.
@@ -225,6 +276,8 @@ need end-to-end validation.
 - `src/push.rs`: FCM registration, background receiver, and desktop notifications.
 - `src/cache.rs`: optional SQLite history and drafts on a worker thread.
 - `src/api_actions.rs`: additional API operations and contact mapping.
+- `src/private_api.rs`, `src/private_views.rs`: capability-gated Private API actions.
+- `src/media.rs`, `src/video.rs`: background image previews and inline libmpv playback.
 - `src/model.rs`: server data models and history merging.
 - `src/app.rs`: session state, background work, polling, and drafts.
 - `src/views.rs`, `src/theme.rs`, `src/widgets.rs`: desktop interface and shared visuals.

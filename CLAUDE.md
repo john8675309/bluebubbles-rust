@@ -45,3 +45,20 @@ Keep API behavior aligned with the upstream BlueBubbles client and server contra
 Changes to API/state behavior should be covered by meaningful tests.
 
 Build/test/package commands and current feature limitations are in README.md.
+
+`src/private_api.rs` and `src/private_views.rs` gate Private API actions against
+server/helper/macOS capabilities and edit/unsend time limits. Keep per-chat composer
+options on failed sends; never automatically retry or downgrade private actions.
+`src/media.rs` owns bounded image/GIF decoding and UI textures. GIFs request original
+bytes and animate only in visible views. Decode GIFs on demand on a worker with
+one prefetched frame; never cache the complete decoded animation. Account for
+full-size compositing buffers in cache memory estimates. `src/video.rs` keeps
+libmpv and decoding on one worker, passing only frames/state to egui. Video buffers
+must remain anonymous temporary files; stop playback on chat change, hide, and
+disconnect. Never pass authenticated server URLs to media players.
+
+`src/contact_editor.rs` edits server-managed display names using the companion
+patch in `server-patches/`. Gate writes on its capability endpoint; never silently
+save app-local names or simulate renaming with the stock name-matched create API.
+Keep exact server contact IDs, recipient addresses, avatars, and unrelated names
+unchanged. Native macOS Contacts writes remain unsupported.

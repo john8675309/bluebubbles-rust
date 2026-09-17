@@ -562,3 +562,253 @@ fn overlapping_history_updates_receipts_without_duplicates() {
             .unwrap();
     assert_eq!(chat.title(), "fallback");
 }
+
+#[test]
+fn private_chat_read_group_and_unsend_requests_match_server() {
+    use bluebubbles_linux::api_actions::Action;
+    let response = serde_json::to_vec(&json!({"data":{}})).unwrap();
+    let (url, rx, worker) = server_many(vec![(200, response); 7]);
+    let api = Api::new(&url, "secret").unwrap();
+    let actions = [
+        (
+            Action::Read {
+                chat: "iMessage;+;group".into(),
+                read: true,
+            },
+            "POST",
+            "/read",
+            json!({}),
+        ),
+        (
+            Action::Read {
+                chat: "iMessage;+;group".into(),
+                read: false,
+            },
+            "POST",
+            "/unread",
+            json!({}),
+        ),
+        (
+            Action::Rename {
+                chat: "iMessage;+;group".into(),
+                name: "Friends".into(),
+            },
+            "PUT",
+            "group",
+            json!({"displayName":"Friends"}),
+        ),
+        (
+            Action::Participant {
+                chat: "iMessage;+;group".into(),
+                address: "alex@example.com".into(),
+                add: true,
+            },
+            "POST",
+            "/participant/add",
+            json!({"address":"alex@example.com"}),
+        ),
+        (
+            Action::Participant {
+                chat: "iMessage;+;group".into(),
+                address: "alex@example.com".into(),
+                add: false,
+            },
+            "POST",
+            "/participant/remove",
+            json!({"address":"alex@example.com"}),
+        ),
+        (
+            Action::Leave {
+                chat: "iMessage;+;group".into(),
+            },
+            "POST",
+            "/leave",
+            json!({}),
+        ),
+        (
+            Action::Unsend {
+                message: "message".into(),
+            },
+            "POST",
+            "/unsend",
+            json!({"partIndex":0}),
+        ),
+    ];
+    for (action, method, suffix, expected) in actions {
+        api.perform(action).unwrap();
+        let request = rx.recv().unwrap();
+        assert_eq!(request.method, method);
+        assert!(request.target.split('?').next().unwrap().ends_with(suffix));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&request.body).unwrap(),
+            expected
+        );
+    }
+    worker.join().unwrap();
+}
+
+#[test]
+fn private_creation_and_attachment_choose_private_api_explicitly() {
+    let (url, rx, worker) = server_many(vec![
+        (
+            200,
+            serde_json::to_vec(&json!({"data":{"guid":"iMessage;+;new"}})).unwrap(),
+        ),
+        (200, serde_json::to_vec(&json!({"data":{}})).unwrap()),
+    ]);
+    let api = Api::new(&url, "secret").unwrap();
+    api.create_chat_with_method(vec!["alex@example.com".into()], "hello", true)
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&rx.recv().unwrap().body).unwrap()["method"],
+        "private-api"
+    );
+    let path = std::env::temp_dir().join(format!("bb-private-upload-{}.txt", uuid::Uuid::new_v4()));
+    std::fs::write(&path, "private attachment").unwrap();
+    api.send_attachment_with_method("iMessage;+;new", &path, "temp", true)
+        .unwrap();
+    let request = rx.recv().unwrap();
+    let body = String::from_utf8_lossy(&request.body);
+    assert!(body.contains("name=\"method\"\r\n\r\nprivate-api"));
+    assert!(body.contains("private attachment"));
+    std::fs::remove_file(path).unwrap();
+    worker.join().unwrap();
+}
+
+#[test]
+fn stale_history_cannot_restore_an_unsent_message() {
+    let old: Message =
+        serde_json::from_value(json!({"guid":"m","text":null,"dateEdited":30,"dateRetracted":30}))
+            .unwrap();
+    let stale: Message =
+        serde_json::from_value(json!({"guid":"m","text":"secret","dateCreated":10})).unwrap();
+    let mut history = vec![old];
+    merge_messages(&mut history, vec![stale]);
+    assert!(history[0].is_unsent());
+    assert_eq!(history[0].preview(), "Message unsent");
+}
+
+#[test]
+fn inline_media_downloads_are_authenticated_and_video_is_rewound() {
+    let (url, rx, worker) = server_many(vec![
+        (200, b"image fixture".to_vec()),
+        (200, b"video fixture".to_vec()),
+    ]);
+    let api = Api::new(&url, "secret").unwrap();
+    assert_eq!(api.image_preview("image-id").unwrap(), b"image fixture");
+    let request = rx.recv().unwrap();
+    assert!(request.target.contains("/attachment/image-id/download?"));
+    assert!(request.target.contains("guid=secret"));
+    assert!(request.target.contains("width=1200"));
+    let mut file = tempfile::tempfile().unwrap();
+    api.video_file(
+        "video-id",
+        &mut file,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"video fixture");
+    assert!(rx.recv().unwrap().target.contains("guid=secret"));
+    worker.join().unwrap();
+}
+
+#[test]
+fn animated_image_requests_original_bytes_to_preserve_frames() {
+    let (url, rx, worker) = server_many(vec![(200, b"GIF89a fixture".to_vec())]);
+    assert_eq!(
+        Api::new(&url, "secret")
+            .unwrap()
+            .animated_image("gif-id")
+            .unwrap(),
+        b"GIF89a fixture"
+    );
+    let request = rx.recv().unwrap();
+    assert!(request.target.contains("original=true"));
+    assert!(request.target.contains("guid=secret"));
+    assert!(!request.target.contains("width="));
+    worker.join().unwrap();
+}
+
+#[test]
+fn server_contact_edit_uses_exact_id_and_preserves_addresses() {
+    let old = json!({"id":7,"sourceType":"db","displayName":"Old name","firstName":"Old","phoneNumbers":[{"address":"+15551234567"}],"emails":[{"address":"other@example.com"}]});
+    let mut saved = old.clone();
+    saved["displayName"] = json!("New name");
+    let (url, rx, worker) = server_many(vec![
+        (
+            200,
+            serde_json::to_vec(&json!({"data":{"localContactNames":true}})).unwrap(),
+        ),
+        (200, serde_json::to_vec(&json!({"data":[old]})).unwrap()),
+        (200, serde_json::to_vec(&json!({"data":saved})).unwrap()),
+    ]);
+    let api = Api::new(&url, "secret").unwrap();
+    let contact = api.editable_contact("+1 (555) 123-4567").unwrap().unwrap();
+    assert_eq!(
+        api.save_contact_name(Some(&contact), "+15551234567", "New name")
+            .unwrap()["displayName"],
+        "New name"
+    );
+    assert!(rx.recv().unwrap().target.contains("contact/capabilities"));
+    rx.recv().unwrap();
+    let request = rx.recv().unwrap();
+    assert_eq!(request.method, "PUT");
+    assert!(request.target.contains("/contact/7?"));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&request.body).unwrap(),
+        json!({"displayName":"New name"})
+    );
+    worker.join().unwrap();
+}
+#[test]
+fn stock_server_and_native_mac_contacts_cannot_be_renamed() {
+    let (url, rx, worker) = server_many(vec![(404, b"{}".to_vec())]);
+    assert!(Api::new(&url, "secret")
+        .unwrap()
+        .editable_contact("a@example.com")
+        .unwrap_err()
+        .contains("patch"));
+    rx.recv().unwrap();
+    worker.join().unwrap();
+    let (url,rx,worker)=server_many(vec![(200,serde_json::to_vec(&json!({"data":{"localContactNames":true}})).unwrap()),(200,serde_json::to_vec(&json!({"data":[{"id":"mac-id","sourceType":"api","displayName":"Mac name","emails":[{"address":"a@example.com"}]}]})).unwrap())]);
+    assert!(Api::new(&url, "secret")
+        .unwrap()
+        .editable_contact("a@example.com")
+        .unwrap_err()
+        .contains("macOS Contacts"));
+    rx.recv().unwrap();
+    rx.recv().unwrap();
+    worker.join().unwrap();
+}
+
+#[test]
+fn new_server_contact_uses_dedicated_create_and_confirmation() {
+    let response = json!({"data":{"id":8,"sourceType":"db","displayName":"New contact","emails":[{"address":"new@example.com"}]}});
+    let (url, rx, worker) = server_many(vec![(200, serde_json::to_vec(&response).unwrap())]);
+    assert_eq!(
+        Api::new(&url, "secret")
+            .unwrap()
+            .save_contact_name(None, "new@example.com", "New contact")
+            .unwrap()["id"],
+        8
+    );
+    let request = rx.recv().unwrap();
+    assert_eq!(request.method, "POST");
+    assert!(request.target.contains("/contact/local?"));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&request.body).unwrap(),
+        json!({"displayName":"New contact","address":"new@example.com"})
+    );
+    worker.join().unwrap();
+    let (url, rx, worker) = server_many(vec![(200, serde_json::to_vec(&response).unwrap())]);
+    let wrong = json!({"id":7,"sourceType":"db"});
+    assert!(Api::new(&url, "secret")
+        .unwrap()
+        .save_contact_name(Some(&wrong), "new@example.com", "New contact")
+        .unwrap_err()
+        .contains("did not confirm"));
+    rx.recv().unwrap();
+    worker.join().unwrap();
+}

@@ -1,6 +1,6 @@
 use bluebubbles_linux::{
     api::{Api, ApiResult},
-    api_actions::{contact_names, normalize_address, ServerInfo},
+    api_actions::{contact_names, Action, SendOptions, ServerInfo},
     cache::{Cache, OpenCache},
     firebase::FirebaseConfig,
     model::{merge_messages, Chat, Message},
@@ -14,6 +14,10 @@ use std::{
 };
 
 pub enum Event {
+    PrivateComplete {
+        action: Action,
+        value: serde_json::Value,
+    },
     FirebaseNotice(String),
     PushSetup(ApiResult<()>),
     FirebaseConfig {
@@ -42,6 +46,7 @@ pub enum Event {
     Sent {
         chat: String,
         draft: String,
+        extras: crate::private_api::Extras,
     },
     Created(Box<Chat>),
     Notice(String),
@@ -60,6 +65,13 @@ enum Work {
 type Completion = (u64, Work, ApiResult<Event>);
 
 pub struct App {
+    pub contact_editor: Option<crate::contact_editor::Editor>,
+    pub media: crate::media::Media,
+    pub private_enabled: bool,
+    pub send_typing: bool,
+    pub extras: HashMap<String, crate::private_api::Extras>,
+    pub private_dialog: Option<crate::private_api::Dialog>,
+    pub typing_worker: Option<crate::private_api::TypingWorker>,
     pub push_previews: bool,
     pub push_at_login: bool,
     pub firebase_open: bool,
@@ -122,6 +134,16 @@ impl App {
         let dark = cc.storage.and_then(|s| s.get_string("dark")).as_deref() != Some("false");
         crate::theme::apply(&cc.egui_ctx, dark);
         let mut app = Self::with_settings(server, dark);
+        app.private_enabled = cc
+            .storage
+            .and_then(|s| s.get_string("private_enabled"))
+            .as_deref()
+            != Some("false");
+        app.send_typing = cc
+            .storage
+            .and_then(|s| s.get_string("send_typing"))
+            .as_deref()
+            == Some("true");
         app.persist_history = cc
             .storage
             .and_then(|s| s.get_string("persist_history"))
@@ -147,6 +169,13 @@ impl App {
     fn with_settings(server: String, dark: bool) -> Self {
         let (tx, rx) = mpsc::channel();
         Self {
+            contact_editor: None,
+            media: Default::default(),
+            private_enabled: true,
+            send_typing: false,
+            extras: HashMap::new(),
+            private_dialog: None,
+            typing_worker: None,
             push_previews: false,
             push_at_login: false,
             firebase_open: false,
@@ -389,6 +418,10 @@ impl App {
     }
 
     pub fn disconnect(&mut self) {
+        self.media = Default::default();
+        self.typing_worker = None;
+        self.extras.clear();
+        self.private_dialog = None;
         if let Some(desktop) = &self.desktop {
             desktop.lease(None);
         }
@@ -407,6 +440,7 @@ impl App {
         self.socket_online = false;
         self.typing.clear();
         self.contacts.clear();
+        self.contact_editor = None;
         self.server_info = None;
         self.password.clear();
         self.chats.clear();
@@ -424,6 +458,8 @@ impl App {
     }
 
     pub fn select(&mut self, ctx: &egui::Context, guid: String) {
+        self.stop_typing();
+        self.media.stop_video();
         self.selected = Some(guid.clone());
         self.message_search.clear();
         self.scroll_to_bottom = true;
@@ -507,6 +543,17 @@ impl App {
     }
 
     pub fn chat_title(&self, chat: &Chat) -> String {
+        if chat.participants.len() == 1 {
+            if let Some(name) =
+                self.contacts
+                    .get(&bluebubbles_linux::api_actions::normalize_address(
+                        &chat.participants[0].address,
+                    ))
+            {
+                return name.clone();
+            }
+        }
+
         if chat
             .display_name
             .as_ref()
@@ -517,12 +564,7 @@ impl App {
         }
         chat.participants
             .iter()
-            .map(|handle| {
-                self.contacts
-                    .get(&normalize_address(&handle.address))
-                    .cloned()
-                    .unwrap_or_else(|| handle.address.clone())
-            })
+            .map(|handle| self.contact_name(&handle.address))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -595,6 +637,7 @@ impl App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             } else if ctx.input(|input| input.viewport().close_requested()) && tray.online() {
                 self.hidden = true;
+                self.media.stop_video();
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             }
@@ -685,23 +728,60 @@ impl App {
     }
 
     pub fn send(&mut self, ctx: &egui::Context) {
+        if self.busy {
+            return;
+        }
         if let (Some(api), Some(chat)) = (self.api.clone(), self.selected.clone()) {
             let draft = self.drafts.get(&chat).cloned().unwrap_or_default();
             if draft.trim().is_empty() {
                 return;
             }
+            let extras = self.extras.get(&chat).cloned().unwrap_or_default();
+            let private = self.private_for(&chat);
+            if !extras.is_empty() && !private {
+                self.error = Some("Reply, subject, and effects require a connected Private API helper. Restore it or clear those options before sending.".into());
+                return;
+            }
+            if extras.reply.is_some()
+                && !self
+                    .server_info
+                    .as_ref()
+                    .is_some_and(|info| info.macos_at_least(11))
+            {
+                self.error = Some("Replies require macOS 11 or newer.".into());
+                return;
+            }
+            self.stop_typing();
             let temp_guid = uuid::Uuid::new_v4().to_string();
             self.error = None;
             self.run(ctx, "Sending…", move || {
-                api.send_text(&chat, &draft, &temp_guid)
+                if private && !api.info()?.private_available() { return Err("Private API helper disconnected. Your draft was kept; no message was sent.".into()); }
+                api.send_with_options(&chat, &draft, &temp_guid, SendOptions {
+                    private_api: private,
+                    subject: (!extras.subject.is_empty()).then(|| extras.subject.clone()),
+                    effect: (!extras.effect.is_empty()).then(|| extras.effect.clone()),
+                    reply: extras.reply.as_ref().map(|(guid, _)| guid.clone()),
+                })
                     .map_err(|e| format!("{e} Your draft was kept. Check the conversation before retrying; the server may have received it."))?;
-                Ok(Event::Sent { chat, draft })
+                Ok(Event::Sent { chat, draft, extras })
             });
         }
     }
 
     pub fn attach(&mut self, ctx: &egui::Context) {
         if let (Some(api), Some(chat)) = (self.api.clone(), self.selected.clone()) {
+            if self
+                .extras
+                .get(&chat)
+                .is_some_and(|extras| !extras.is_empty())
+            {
+                self.error = Some(
+                    "Send or clear your text reply, subject, and effect before attaching a file."
+                        .into(),
+                );
+                return;
+            }
+            let private = self.private_for(&chat);
             self.run(ctx, "Choosing / sending attachment…", move || {
                 let Some(path) = rfd::FileDialog::new()
                     .set_title("Send attachment")
@@ -709,10 +789,18 @@ impl App {
                 else {
                     return Ok(Event::Cancelled);
                 };
-                api.send_attachment(&chat, &path, &uuid::Uuid::new_v4().to_string())
-                    .map_err(|e| {
-                        format!("{e} Check the conversation before sending the attachment again.")
-                    })?;
+                if private && !api.info()?.private_available() {
+                    return Err("Private API helper disconnected. Attachment was not sent.".into());
+                }
+                api.send_attachment_with_method(
+                    &chat,
+                    &path,
+                    &uuid::Uuid::new_v4().to_string(),
+                    private,
+                )
+                .map_err(|e| {
+                    format!("{e} Check the conversation before sending the attachment again.")
+                })?;
                 Ok(Event::Notice("Attachment sent".into()))
             });
         }
@@ -753,8 +841,10 @@ impl App {
             }
             let message = self.initial_message.clone();
             self.error = None;
+            let private = self.private_available();
             self.run(ctx, "Creating conversation…", move || {
-                api.create_chat(addresses, &message).map(|chat| Event::Created(Box::new(chat)))
+                if private && !api.info()?.private_available() { return Err("Private API helper disconnected. Conversation was not created.".into()); }
+                api.create_chat_with_method(addresses, &message, private).map(|chat| Event::Created(Box::new(chat)))
                     .map_err(|e| format!("{e} Check the chat list before retrying; your initial message may have been sent."))
             });
         }
@@ -884,6 +974,45 @@ impl App {
                 }
             };
             match event {
+                Event::PrivateComplete { action, value } => {
+                    self.private_dialog = None;
+
+                    if let Ok(message) = serde_json::from_value::<Message>(value) {
+                        for (chat, history) in &mut self.messages {
+                            if history.iter().any(|m| m.guid == message.guid) {
+                                merge_messages(history, vec![message.clone()]);
+                                if let Some(cache) = &self.cache {
+                                    cache.messages(chat.clone(), history.clone());
+                                }
+                            }
+                        }
+                    }
+                    match action {
+                        Action::Unsend { message } => {
+                            for (chat, history) in &mut self.messages {
+                                if let Some(target) = history.iter_mut().find(|m| m.guid == message)
+                                {
+                                    let now = chrono::Utc::now().timestamp_millis();
+                                    target.text = None;
+                                    target.attachments.clear();
+                                    target.date_edited = Some(now);
+                                    target.extra.insert("dateRetracted".into(), now.into());
+                                    if let Some(cache) = &self.cache {
+                                        cache.messages(chat.clone(), history.clone());
+                                    }
+                                }
+                            }
+                        }
+                        Action::Rename { chat, name } => {
+                            if let Some(target) = self.chats.iter_mut().find(|c| c.guid == chat) {
+                                target.display_name = Some(name);
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.status = "Action completed".into();
+                    self.next_refresh = Instant::now();
+                }
                 Event::FirebaseNotice(notice) => self.firebase_status = notice,
                 Event::PushSetup(result) => self.firebase_status = match result {
                     Ok(()) => {
@@ -1053,7 +1182,14 @@ impl App {
                     }
                     self.last_sync = Some(Instant::now());
                 }
-                Event::Sent { chat, draft } => {
+                Event::Sent {
+                    chat,
+                    draft,
+                    extras,
+                } => {
+                    if self.extras.get(&chat) == Some(&extras) {
+                        self.extras.remove(&chat);
+                    }
                     if self.drafts.get(&chat) == Some(&draft) {
                         self.drafts.remove(&chat);
                         self.save_draft(&chat);
@@ -1084,6 +1220,9 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.desktop_update(ctx);
+        if !self.hidden {
+            self.media.update(ctx);
+        }
         self.display.update(ctx);
         self.receive(ctx);
         if let Some(errors) = &self.cache_errors {
@@ -1096,7 +1235,9 @@ impl eframe::App for App {
         if self.connected && !self.busy && !self.refreshing && Instant::now() >= self.next_refresh {
             self.refresh(ctx);
         }
-        crate::views::show(self, ctx);
+        if !self.hidden {
+            crate::views::show(self, ctx);
+        }
         ctx.request_repaint_after(Duration::from_millis(500));
     }
 
@@ -1110,6 +1251,8 @@ impl eframe::App for App {
         storage.set_string("server", server);
         storage.set_string("dark", self.dark.to_string());
         storage.set_string("persist_history", self.persist_history.to_string());
+        storage.set_string("private_enabled", self.private_enabled.to_string());
+        storage.set_string("send_typing", self.send_typing.to_string());
         storage.set_string("firebase_auto", self.firebase_auto.to_string());
         if let Ok(configs) = serde_json::to_string(&self.firebase_configs) {
             storage.set_string("firebase_configs", configs);
@@ -1412,6 +1555,7 @@ mod tests {
                 Ok(Event::Sent {
                     chat: "chat".into(),
                     draft: "sent message".into(),
+                    extras: Default::default(),
                 }),
             ))
             .unwrap();

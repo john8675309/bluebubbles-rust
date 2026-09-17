@@ -26,6 +26,9 @@ notify-rust = "4"
 ksni = { version = "=0.3.6", features = ["blocking"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 prost = "0.14"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+libloading = "0.8"
+tempfile = "3"
 
 [profile.release]
 strip = true

@@ -22,6 +22,18 @@ impl ServerInfo {
     pub fn private_available(&self) -> bool {
         self.private_api && self.helper_connected
     }
+    pub fn server_at_least(&self, major: u32, minor: u32, patch: u32) -> bool {
+        let mut parts = self
+            .server_version
+            .trim_start_matches('v')
+            .split(['.', '-']);
+        let version = (
+            parts.next().and_then(|s| s.parse::<u32>().ok()),
+            parts.next().and_then(|s| s.parse::<u32>().ok()),
+            parts.next().and_then(|s| s.parse::<u32>().ok()),
+        );
+        matches!(version, (Some(a), Some(b), Some(c)) if (a,b,c) >= (major,minor,patch))
+    }
     pub fn macos_at_least(&self, version: u32) -> bool {
         self.os_version
             .split('.')
@@ -99,6 +111,112 @@ impl Api {
     }
     pub fn contacts(&self) -> ApiResult<Vec<Value>> {
         self.json(self.client.get(self.endpoint(&["contact"])))
+    }
+    pub fn editable_contact(&self, address: &str) -> ApiResult<Option<Value>> {
+        let response = self
+            .client
+            .get(self.endpoint(&["contact", "capabilities"]))
+            .send()
+            .map_err(|_| {
+                "Could not check contact-editing support. Check your server connection."
+            })?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err("This server needs the contact-editing API patch before contacts can be saved from this app.".into());
+        }
+        if !response.status().is_success() {
+            return Err("Could not check contact-editing support. Check your server connection and password.".into());
+        }
+        let capabilities: Value = response
+            .json()
+            .map_err(|_| "Invalid contact-editing capability response.")?;
+        if capabilities
+            .pointer("/data/localContactNames")
+            .and_then(Value::as_bool)
+            != Some(true)
+        {
+            return Err("This server does not support contact-name editing from clients.".into());
+        }
+        let key = normalize_address(address);
+        let matches = self
+            .contacts()?
+            .into_iter()
+            .filter(|contact| {
+                ["phoneNumbers", "emails"].iter().any(|field| {
+                    contact
+                        .get(field)
+                        .and_then(Value::as_array)
+                        .is_some_and(|values| {
+                            values.iter().any(|value| {
+                                value
+                                    .as_str()
+                                    .or_else(|| {
+                                        value
+                                            .get("address")
+                                            .or_else(|| value.get("number"))
+                                            .and_then(Value::as_str)
+                                    })
+                                    .is_some_and(|value| normalize_address(value) == key)
+                            })
+                        })
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut local = matches
+            .iter()
+            .filter(|contact| contact.get("sourceType").and_then(Value::as_str) == Some("db"));
+        let first = local.next();
+        if local.next().is_some() {
+            return Err("Multiple server contacts use this address. Resolve the duplicate contacts on the Mac first.".into());
+        }
+        if let Some(contact) = first {
+            return Ok(Some(contact.clone()));
+        }
+        if !matches.is_empty() {
+            return Err("This contact belongs to macOS Contacts. The server cannot edit it remotely; update it in Contacts on your Mac.".into());
+        }
+        Ok(None)
+    }
+    pub fn save_contact_name(
+        &self,
+        contact: Option<&Value>,
+        address: &str,
+        name: &str,
+    ) -> ApiResult<Value> {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 200 {
+            return Err("Enter a contact name of 1–200 characters.".into());
+        }
+        let request = if let Some(contact) = contact {
+            if contact.get("sourceType").and_then(Value::as_str) != Some("db") {
+                return Err("Only BlueBubbles Server contacts can be edited remotely.".into());
+            }
+            let id = contact
+                .get("id")
+                .and_then(Value::as_u64)
+                .filter(|id| *id > 0)
+                .ok_or("The server returned an invalid contact ID.")?;
+            self.client
+                .put(self.endpoint(&["contact", &id.to_string()]))
+                .json(&json!({"displayName":name}))
+        } else {
+            self.client
+                .post(self.endpoint(&["contact", "local"]))
+                .json(&json!({"displayName":name,"address":address}))
+        };
+        let value: Value = self.json(request)?;
+        let confirmed_id = value.get("id").and_then(Value::as_u64).filter(|id| *id > 0);
+        if value.get("sourceType").and_then(Value::as_str) != Some("db")
+            || confirmed_id.is_none()
+            || contact
+                .is_some_and(|original| original.get("id").and_then(Value::as_u64) != confirmed_id)
+            || contact_names(std::slice::from_ref(&value))
+                .get(&normalize_address(address))
+                .map(String::as_str)
+                != Some(name)
+        {
+            return Err("The server did not confirm the contact change. Check its contact list before trying again.".into());
+        }
+        Ok(value)
     }
     pub fn schedules(&self) -> ApiResult<Vec<Value>> {
         self.json(self.client.get(self.endpoint(&["message", "schedule"])))
@@ -232,7 +350,15 @@ impl Api {
 
 pub fn contact_names(contacts: &[Value]) -> std::collections::HashMap<String, String> {
     let mut names = std::collections::HashMap::new();
-    for contact in contacts {
+    for contact in contacts
+        .iter()
+        .filter(|c| c.get("sourceType").and_then(Value::as_str) != Some("db"))
+        .chain(
+            contacts
+                .iter()
+                .filter(|c| c.get("sourceType").and_then(Value::as_str) == Some("db")),
+        )
+    {
         let name = contact
             .get("displayName")
             .and_then(Value::as_str)

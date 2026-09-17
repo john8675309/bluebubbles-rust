@@ -29,6 +29,7 @@ messages = [
 chat = {"guid": "iMessage;-;alex@example.com", "displayName": "Alex Morgan",
         "participants": [{"address": "alex@example.com"}], "lastMessage": messages[-1]}
 lock = threading.Lock()
+PRIVATE_API = bool(os.environ.get("BB_SMOKE_PRIVATE"))
 SLOW_REFRESH = bool(os.environ.get("BB_SMOKE_SLOW_REFRESH"))
 PERSIST_HISTORY = bool(os.environ.get("BB_SMOKE_HISTORY"))
 poll_started = threading.Event()
@@ -57,7 +58,7 @@ class Handler(BaseHTTPRequestHandler):
         if parse_qs(target.query).get("guid") != ["smoke-test-password"]:
             status, data = 401, None
         elif target.path.endswith("/server/info"):
-            data = {"serverVersion": "1.9.9", "osVersion": "14.0"}
+            data = {"serverVersion": "1.9.9", "osVersion": "14.0", "private_api": PRIVATE_API, "helper_connected": PRIVATE_API}
         elif target.path.endswith("/contact"):
             data = []
         elif target.path.endswith("/fcm/client"):
@@ -80,7 +81,7 @@ class Handler(BaseHTTPRequestHandler):
                 status, data = 500, None
             else:
                 message = {"guid": body["tempGuid"], "text": body["message"], "isFromMe": True,
-                           "dateCreated": 1789487000000 + len(messages), "dateDelivered": 1789487001000}
+                           "dateCreated": int(time.time()*1000) if PRIVATE_API else 1789487000000 + len(messages), "dateDelivered": 1789487001000}
                 history = other_messages if body.get("chatGuid") == other_chat["guid"] else messages
                 history.append(message)
                 data = message
@@ -175,6 +176,9 @@ def main():
                 xdo("key", "Return")
                 sent_history = other_messages if SLOW_REFRESH else messages
                 wait_for(lambda: any(m.get("text") == "Hello from the Rust Linux client!\nSecond line" for m in sent_history))
+                if PRIVATE_API:
+                    sent = next(body for path, body in requests if path.endswith("/message/text"))
+                    assert sent["method"] == "private-api", sent
                 if SLOW_REFRESH:
                     assert not release_poll.is_set()
                     screenshot("interactive-during-refresh.png")

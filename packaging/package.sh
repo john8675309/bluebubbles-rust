@@ -12,6 +12,8 @@ trap 'rm -rf -- "$stage"' EXIT
 mkdir -p dist "$stage/$name"
 install -m755 "$binary" "$stage/$name/bluebubbles-linux"
 install -m644 README.md PARITY.md LICENSE NOTICE "$stage/$name/"
+mkdir -p "$stage/$name/server-patches"
+install -m644 server-patches/README.md server-patches/contact-name-editing.patch "$stage/$name/server-patches/"
 install -m644 packaging/app.bluebubbles.RustLinux.desktop "$stage/$name/"
 install -m644 assets/icon.png "$stage/$name/app.bluebubbles.RustLinux.png"
 tar -C "$stage" -czf "dist/$name.tar.gz" "$name"
@@ -30,6 +32,8 @@ if command -v dpkg-deb >/dev/null; then
     install -m644 assets/icon.png "$package/usr/share/icons/hicolor/1024x1024/apps/app.bluebubbles.RustLinux.png"
     install -m644 README.md PARITY.md NOTICE "$package/usr/share/doc/bluebubbles-linux/"
     install -m644 LICENSE "$package/usr/share/doc/bluebubbles-linux/copyright"
+    mkdir -p "$package/usr/share/doc/bluebubbles-linux/server-patches"
+    install -m644 server-patches/README.md server-patches/contact-name-editing.patch "$package/usr/share/doc/bluebubbles-linux/server-patches/"
     # Match the glibc requirement of the actual build, rather than claiming portability.
     glibc=$(objdump -T "$binary" | sed -n 's/.*GLIBC_\([0-9.]*\).*/\1/p' | sort -V | tail -1)
     cat > "$package/DEBIAN/control" <<EOF
@@ -39,7 +43,7 @@ Architecture: $debarch
 Maintainer: BlueBubbles Rust local build <noreply@localhost>
 Section: net
 Priority: optional
-Depends: libc6 (>= $glibc), libgcc-s1, libssl3t64 | libssl3, libx11-6, libxkbcommon0, libegl1, libgl1, libwayland-client0, libxcb1
+Depends: libc6 (>= $glibc), libgcc-s1, libssl3t64 | libssl3, libx11-6, libxkbcommon0, libegl1, libgl1, libwayland-client0, libxcb1, libmpv2
 Recommends: xdg-desktop-portal, xdg-desktop-portal-gtk, dbus-user-session
 Description: Native Rust Linux client for BlueBubbles
  Browse conversations and send messages through a BlueBubbles Mac server.

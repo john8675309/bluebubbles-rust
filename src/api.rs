@@ -193,11 +193,30 @@ impl Api {
     }
 
     pub fn create_chat(&self, addresses: Vec<String>, text: &str) -> ApiResult<Chat> {
+        self.create_chat_with_method(addresses, text, false)
+    }
+
+    pub fn create_chat_with_method(
+        &self,
+        addresses: Vec<String>,
+        text: &str,
+        private: bool,
+    ) -> ApiResult<Chat> {
         self.json(self.client.post(self.endpoint(&["chat", "new"]))
-            .json(&json!({"addresses": addresses, "message": text, "service": "iMessage", "method": "apple-script"})))
+            .json(&json!({"addresses": addresses, "message": text, "service": "iMessage", "method": if private { "private-api" } else { "apple-script" }})))
     }
 
     pub fn send_attachment(&self, chat: &str, path: &Path, temp_guid: &str) -> ApiResult<()> {
+        self.send_attachment_with_method(chat, path, temp_guid, false)
+    }
+
+    pub fn send_attachment_with_method(
+        &self,
+        chat: &str,
+        path: &Path,
+        temp_guid: &str,
+        private: bool,
+    ) -> ApiResult<()> {
         let name = path
             .file_name()
             .and_then(|s| s.to_str())
@@ -208,7 +227,14 @@ impl Api {
         let form = multipart::Form::new()
             .text("chatGuid", chat.to_string())
             .text("tempGuid", temp_guid.to_string())
-            .text("method", "apple-script")
+            .text(
+                "method",
+                if private {
+                    "private-api"
+                } else {
+                    "apple-script"
+                },
+            )
             .text("name", name.to_string())
             .file("attachment", path)
             .map_err(|_| "Could not read the attachment file.")?;
@@ -219,6 +245,92 @@ impl Api {
                 .multipart(form),
         )?;
         Ok(())
+    }
+
+    pub fn image_preview(&self, guid: &str) -> ApiResult<Vec<u8>> {
+        self.image_bytes(guid, false)
+    }
+
+    pub fn animated_image(&self, guid: &str) -> ApiResult<Vec<u8>> {
+        self.image_bytes(guid, true)
+    }
+
+    fn image_bytes(&self, guid: &str, original: bool) -> ApiResult<Vec<u8>> {
+        let request = self
+            .client
+            .get(self.endpoint(&["attachment", guid, "download"]));
+        let request = if original {
+            request.query(&[("original", "true")])
+        } else {
+            request.query(&[("width", "1200"), ("quality", "good")])
+        };
+        let mut response = request.send().map_err(network_error)?;
+        if !response.status().is_success() {
+            return Err(response_error(response));
+        }
+        let mut bytes = Vec::new();
+        response
+            .by_ref()
+            .take(24 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "Could not load image preview.")?;
+        if bytes.len() > 24 * 1024 * 1024 {
+            return Err(
+                "Image is too large for an inline preview. Use Save to download it.".into(),
+            );
+        }
+        Ok(bytes)
+    }
+
+    pub fn video_file(
+        &self,
+        guid: &str,
+        file: &mut std::fs::File,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> ApiResult<()> {
+        use std::io::{Seek, Write};
+        let mut response = self
+            .client
+            .get(self.endpoint(&["attachment", guid, "download"]))
+            .timeout(Duration::from_secs(300))
+            .send()
+            .map_err(network_error)?;
+        if !response.status().is_success() {
+            return Err(response_error(response));
+        }
+        let limit = 512 * 1024 * 1024;
+        if response
+            .content_length()
+            .is_some_and(|length| length > limit)
+        {
+            return Err(
+                "Video exceeds the 512 MB inline playback limit. Use Save to download it.".into(),
+            );
+        }
+        let mut total = 0;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("Playback cancelled.".into());
+            }
+            let count = response
+                .read(&mut buffer)
+                .map_err(|_| "Could not load video.")?;
+            if count == 0 {
+                break;
+            }
+            total += count as u64;
+            if total > limit {
+                return Err(
+                    "Video exceeds the 512 MB inline playback limit. Use Save to download it."
+                        .into(),
+                );
+            }
+            file.write_all(&buffer[..count])
+                .map_err(|_| "Could not buffer video.")?;
+        }
+        file.rewind()
+            .map_err(|_| "Could not read video buffer.".into())
     }
 
     pub fn download(&self, guid: &str, path: &Path) -> ApiResult<()> {

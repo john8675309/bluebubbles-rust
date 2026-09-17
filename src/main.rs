@@ -1,8 +1,13 @@
 mod app;
 mod composer;
+mod contact_editor;
 mod display;
+mod media;
+mod private_api;
+mod private_views;
 mod theme;
 mod tray;
+mod video;
 mod views;
 mod widgets;
 

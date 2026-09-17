@@ -16,15 +16,15 @@ Baseline reviewed: upstream client `e2eaced6e`, especially
 | Monitor scaling | Implemented, virtual-display tested | Physical mixed-DPI/Wayland checks |
 | Chat list and history | Implemented, mock/GUI tested | Persistent cache; unread/pinned/archive/mute/custom groups; contact names |
 | Text and new chats | Implemented, mock/GUI tested | SMS selection; pending outbox; richer composer |
-| Attachments | Upload/download implemented, mock tested | Inline image/video/audio, galleries, previews, drag/drop, audio recording, stickers |
+| Attachments | Upload/download, background inline images/GIF autoplay, and libmpv inline video implemented | Audio-only playback, galleries, video thumbnails, drag/drop, audio recording, stickers |
 | Background interaction | Fixed, stalled-poll GUI tested | Preserve responsiveness across all new operations |
 | Real-time events | Socket.IO messages/receipts/typing implemented; local handshake tested | Live Mac reconnect verification; full group/read event handling; encrypted event support |
 | Local database | Opt-in SQLite history/drafts and URL isolation implemented, unit tested | Offline login, local search, cache management, future migrations |
-| Contacts | Server contact names implemented | Avatars, contact editing/import, regional phone matching |
-| Message actions | Pending | Copy/reply/reactions/edit/unsend/delete/forward/share/bookmark/reminders |
-| Threading and reactions | Pending | Parse/present thread parts, stickers, tapbacks and custom emoji |
-| Private API | Pending | Capability/version gates; subjects/effects; typing/read state; group administration |
-| Group details | Pending | Rename, participants, leave/delete, group icons, media/links, local preferences |
+| Contacts | Server names and clickable server-contact display-name editing implemented; requires companion server patch | Install/test patch on Mac; native macOS Contacts writes; phone/email edits, avatars/import, regional phone matching |
+| Message actions | Copy/reply/tapbacks/edit/unsend implemented with capability gates | Live Mac verification; multipart actions; delete/forward/share/bookmark/reminders |
+| Threading and reactions | Basic reply references and tapback annotations | Full multipart/thread presentation, stickers and custom emoji |
+| Private API | Capability/version gates, subjects/effects, opt-in typing, read/unread, group actions implemented | Live Mac verification; complete multipart behavior |
+| Group details | Rename, add/remove participant, leave implemented | Delete, group icons, media/links, local preferences |
 | Scheduling | Pending | Create/edit/delete schedules; scheduled messages list; reminders |
 | Search | Loaded-content search implemented | Database/server search, filters, jump to message, media/contact search |
 | Desktop integration | Launcher/packages, close-to-tray, icon restore, explicit quit, connected-session desktop alerts | Notification actions/sound, main-app startup, protocol links, shortcuts; physical desktop/Wayland checks |

@@ -7,6 +7,8 @@ use crate::theme::{palette, panel, BLUE};
 use crate::widgets;
 
 pub fn show(app: &mut App, ctx: &egui::Context) {
+    crate::private_views::dialog(app, ctx);
+    crate::contact_editor::show(app, ctx);
     let colors = palette(app.dark);
     egui::TopBottomPanel::top("toolbar")
         .frame(panel(colors.sidebar, 12))
@@ -48,6 +50,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             }
                         }
                     }
+                    crate::private_views::toolbar(ui, app, ctx);
                 });
             });
         });
@@ -428,6 +431,7 @@ fn conversation(app: &mut App, ctx: &egui::Context) {
         return;
     };
     let colors = palette(app.dark);
+    let mut edit_contact = None;
     egui::TopBottomPanel::top("conversation_header")
         .frame(panel(colors.background, 20))
         .show(ctx, |ui| {
@@ -438,25 +442,34 @@ fn conversation(app: &mut App, ctx: &egui::Context) {
                         ui.allocate_exact_size(egui::vec2(46.0, 46.0), egui::Sense::hover());
                     widgets::avatar(ui, rect.center(), &title, &guid, 46.0);
                     ui.vertical(|ui| {
-                        ui.add(
-                            egui::Label::new(RichText::new(&title).size(23.0).strong()).truncate(),
+                        let title_response = ui.add(
+                            egui::Label::new(RichText::new(&title).size(23.0).strong())
+                                .truncate()
+                                .sense(egui::Sense::click()),
                         );
-                        let detail = if app.typing.contains_key(&guid) {
-                            "Typing…".into()
-                        } else {
-                            chat.participants
-                                .iter()
-                                .map(|h| h.address.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        };
-                        ui.add(
-                            egui::Label::new(RichText::new(detail).size(12.0).color(colors.muted))
-                                .truncate(),
-                        );
+                        if chat.participants.len() == 1
+                            && title_response.on_hover_text("Edit contact name").clicked()
+                        {
+                            edit_contact = Some(chat.participants[0].address.clone());
+                        }
+                        if app.typing.contains_key(&guid) {
+                            ui.small("Typing…");
+                        }
+                        ui.horizontal_wrapped(|ui| {
+                            for handle in &chat.participants {
+                                if ui
+                                    .link(RichText::new(&handle.address).size(12.0))
+                                    .on_hover_text("Edit contact name")
+                                    .clicked()
+                                {
+                                    edit_contact = Some(handle.address.clone());
+                                }
+                            }
+                        });
                     });
                 });
             }
+            crate::private_views::conversation_menu(ui, app, ctx, &guid);
             ui.add_space(4.0);
             ui.add(
                 TextEdit::singleline(&mut app.message_search)
@@ -466,8 +479,13 @@ fn conversation(app: &mut App, ctx: &egui::Context) {
                     .desired_width(ui.available_width().min(360.0)),
             );
         });
+    if let Some(address) = edit_contact.take() {
+        app.edit_contact(address);
+    }
     composer(app, ctx, &guid);
+    let mut media = std::mem::take(&mut app.media);
     let mut download = None;
+    let mut intent = None;
     egui::CentralPanel::default()
         .frame(panel(colors.background, 22))
         .show(ctx, |ui| {
@@ -519,18 +537,31 @@ fn conversation(app: &mut App, ctx: &egui::Context) {
                                 .any(|chat| chat.guid == guid && chat.participants.len() > 1)
                                 && !message.is_from_me
                             {
-                                message.handle.as_ref().map(|handle| {
-                                    app.contacts
-                                        .get(&bluebubbles_linux::api_actions::normalize_address(
-                                            &handle.address,
-                                        ))
-                                        .cloned()
-                                        .unwrap_or_else(|| handle.address.clone())
-                                })
+                                message
+                                    .handle
+                                    .as_ref()
+                                    .map(|handle| app.contact_name(&handle.address))
                             } else {
                                 None
                             };
-                            message_bubble(ui, message, sender.as_deref(), app.busy, &mut download);
+                            if message_bubble(
+                                ui,
+                                message,
+                                sender.as_deref(),
+                                app.busy,
+                                &mut download,
+                                &mut media,
+                                app.api.as_ref(),
+                            ) {
+                                edit_contact =
+                                    message.handle.as_ref().map(|handle| handle.address.clone());
+                            }
+                            crate::private_views::decorations(ui, message, messages);
+                            if let Some(action) =
+                                crate::private_views::message_menu(ui, app, &guid, message)
+                            {
+                                intent = Some(action);
+                            }
                         }
                     } else {
                         ui.label("Loading conversation…");
@@ -540,6 +571,13 @@ fn conversation(app: &mut App, ctx: &egui::Context) {
                     }
                 });
         });
+    app.media = media;
+    if let Some(address) = edit_contact {
+        app.edit_contact(address);
+    }
+    if let Some(intent) = intent {
+        crate::private_views::apply(app, ctx, &guid, intent);
+    }
     if let Some((guid, name)) = download {
         app.download(ctx, guid, name);
     }
@@ -556,6 +594,7 @@ fn composer(app: &mut App, ctx: &egui::Context, guid: &str) {
                 .corner_radius(16)
                 .inner_margin(14)
                 .show(ui, |ui| {
+                    crate::private_views::composer_options(ui, app, guid);
                     let draft = app.drafts.entry(guid.to_owned()).or_default();
                     let input_id = egui::Id::new(("message_composer", guid));
                     let send_shortcut = crate::composer::take_send_key(ui, input_id);
@@ -572,6 +611,7 @@ fn composer(app: &mut App, ctx: &egui::Context, guid: &str) {
                         .show(ui);
                     let can_send = !app.busy && !draft.trim().is_empty();
                     if output.response.changed() {
+                        app.typing_changed(guid);
                         app.save_draft(guid);
                     }
                     let mut send = send_shortcut && can_send;
@@ -621,7 +661,10 @@ fn message_bubble(
     sender: Option<&str>,
     busy: bool,
     download: &mut Option<(String, String)>,
-) {
+    media: &mut crate::media::Media,
+    api: Option<&bluebubbles_linux::api::Api>,
+) -> bool {
+    let mut clicked = false;
     let colors = palette(ui.visuals().dark_mode);
     let outgoing = message.is_from_me;
     let align = if outgoing { Align::RIGHT } else { Align::LEFT };
@@ -629,7 +672,10 @@ fn message_bubble(
     ui.with_layout(Layout::top_down(align), |ui| {
         ui.spacing_mut().item_spacing.y = 5.0;
         if let Some(sender) = sender {
-            ui.label(RichText::new(sender).size(11.0).color(colors.muted));
+            clicked = ui
+                .link(RichText::new(sender).size(11.0).color(colors.muted))
+                .on_hover_text("Edit contact name")
+                .clicked();
         }
         let fill = if outgoing { BLUE } else { colors.surface };
         egui::Frame::new()
@@ -649,12 +695,15 @@ fn message_bubble(
                 if let Some(subject) = message.subject.as_ref().filter(|s| !s.is_empty()) {
                     ui.strong(subject);
                 }
-                if let Some(text) = message.text.as_ref().filter(|s| !s.is_empty()) {
+                if message.is_unsent() {
+                    ui.weak("Message unsent");
+                } else if let Some(text) = message.text.as_ref().filter(|s| !s.is_empty()) {
                     ui.add(egui::Label::new(text).wrap().selectable(true));
                 } else if message.attachments.is_empty() {
                     ui.label("[Non-text message]");
                 }
-                for attachment in &message.attachments {
+                for attachment in message.attachments.iter().filter(|_| !message.is_unsent()) {
+                    media.show(ui, api, attachment);
                     let name = attachment
                         .transfer_name
                         .clone()
@@ -685,6 +734,7 @@ fn message_bubble(
         );
         ui.add_space(8.0);
     });
+    clicked
 }
 
 fn new_chat(app: &mut App, ctx: &egui::Context) {

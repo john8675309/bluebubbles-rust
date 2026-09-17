@@ -1,0 +1,91 @@
+diff --git a/packages/server/src/server/api/http/api/v1/httpRoutes.ts b/packages/server/src/server/api/http/api/v1/httpRoutes.ts
+index 0f4be56..be25aff 100644
+--- a/packages/server/src/server/api/http/api/v1/httpRoutes.ts
++++ b/packages/server/src/server/api/http/api/v1/httpRoutes.ts
+@@ -603,6 +603,21 @@ export class HttpRoutes {
+                 middleware: HttpRoutes.protected,
+                 prefix: "contact",
+                 routes: [
++                    {
++                        method: HttpMethod.GET,
++                        path: "capabilities",
++                        controller: ContactRouter.capabilities
++                    },
++                    {
++                        method: HttpMethod.POST,
++                        path: "local",
++                        controller: ContactRouter.createLocal
++                    },
++                    {
++                        method: HttpMethod.PUT,
++                        path: ":id",
++                        controller: ContactRouter.updateName
++                    },
+                     {
+                         method: HttpMethod.GET,
+                         path: "",
+diff --git a/packages/server/src/server/api/http/api/v1/routers/contactRouter.ts b/packages/server/src/server/api/http/api/v1/routers/contactRouter.ts
+index 02e247d..c775515 100644
+--- a/packages/server/src/server/api/http/api/v1/routers/contactRouter.ts
++++ b/packages/server/src/server/api/http/api/v1/routers/contactRouter.ts
+@@ -9,6 +9,60 @@ import { parseWithQuery } from "../utils";
+ import { BadRequest } from "../responses/errors";
+ 
+ export class ContactRouter {
++    // Optional client contact-name editing extension. Never modifies macOS Contacts.
++    static async capabilities(ctx: RouterContext, _: Next) {
++        return new Success(ctx, { data: { localContactNames: true } }).send();
++    }
++
++    private static nameFromBody(body: any): string {
++        if (!body || typeof body.displayName !== "string" || !body.displayName.trim()
++            || [...body.displayName.trim()].length > 200) {
++            throw new BadRequest({ error: "displayName must contain 1–200 characters" });
++        }
++        return body.displayName.trim();
++    }
++
++    static async updateName(ctx: RouterContext, _: Next) {
++        const rawId = ctx.params.id;
++        const id = Number(rawId);
++        if (!/^[1-9][0-9]*$/.test(rawId) || !Number.isSafeInteger(id)) {
++            throw new BadRequest({ error: "Invalid server contact ID" });
++        }
++        const displayName = ContactRouter.nameFromBody(ctx.request.body);
++        const existing = await ContactInterface.findDbContact({ contactId: id });
++        // Update the exact database contact. Preserve names, addresses and avatar.
++        const updated = await ContactInterface.createContact({
++            id, firstName: existing.firstName, lastName: existing.lastName,
++            displayName, updateEntry: true
++        });
++        return new Success(ctx, { data: ContactInterface.mapContacts([updated], "db")[0] }).send();
++    }
++
++    static async createLocal(ctx: RouterContext, _: Next) {
++        const displayName = ContactRouter.nameFromBody(ctx.request.body);
++        const address = ctx.request.body?.address;
++        if (typeof address !== "string" || !address.trim() || address.length > 320) {
++            throw new BadRequest({ error: "A valid contact address is required" });
++        }
++        const normalized = address.includes("@") ? address.trim().toLowerCase() : address.replace(/[^0-9]/g, "");
++        if (!normalized) throw new BadRequest({ error: "A valid contact address is required" });
++        const contacts = await ContactInterface.getAllContacts();
++        if (contacts.some(c => [...(c.phoneNumbers ?? []), ...(c.emails ?? [])].some(a => {
++            const value = typeof a === "string" ? a : (a.address ?? a.number ?? "");
++            const key = value.includes("@") ? value.trim().toLowerCase() : value.replace(/[^0-9]/g, "");
++            return key === normalized;
++        }))) {
++            throw new BadRequest({ error: "This address already belongs to a contact. Reopen the editor." });
++        }
++        const created = await ContactInterface.createContact({
++            displayName,
++            emails: address.includes("@") ? [address.trim()] : [],
++            phoneNumbers: address.includes("@") ? [] : [address.trim()],
++            updateEntry: false
++        });
++        return new Success(ctx, { data: ContactInterface.mapContacts([created], "db")[0] }).send();
++    }
++
+     private static isAddressObject(data: any): boolean {
+         return (
+             data &&
